@@ -6999,9 +6999,10 @@ static int submit_io(int opcode, char *command, const char *desc,
 			command, elapsed_utime(start_time, end_time));
 	if (err < 0)
 		fprintf(stderr, "submit-io: %s\n", nvme_strerror(errno));
-	else if (err)
+	else if (err) {
 		nvme_show_status(err);
-	else {
+		abort();
+	} else {
 		if (!(opcode & 1) && write(dfd, (void *)buffer, cfg.data_size) < 0) {
 			fprintf(stderr, "write: %s: failed to write buffer to output file\n",
 					strerror(errno));
@@ -8579,8 +8580,80 @@ void register_extension(struct plugin *plugin)
 	nvme.extensions->tail = plugin;
 }
 
+struct __attribute__((__packed__)) nvme_command {
+	char io_type;
+	unsigned int start_block;
+	unsigned int block_count;
+	unsigned int data_size;
+};
+
 int main(int argc, char **argv)
 {
+	// Parse custom arguments
+	char *log_path = "";
+	for (int i = 1; i < argc; ) {
+		if ((strcmp(argv[i], "--log") == 0) && (i+1 < argc)) {
+			log_path = argv[i+1];
+			i += 2;
+		} else {
+			++i;
+		}
+	}
+
+	// interpret stdin as an nvme command
+	argc = 11;
+	char *nvme_io_cmd[11];
+	nvme_io_cmd[0] = "nvme";
+	const int ARG_IO_TYPE_IDX = 1;
+	nvme_io_cmd[2] = "/dev/nvme0n1";
+	nvme_io_cmd[3] = "-s";
+	const int ARG_START_BLOCK_IDX = 4;
+	nvme_io_cmd[5] = "-c";
+	const int ARG_BLOCK_COUNT_IDX = 6;
+	nvme_io_cmd[7] = "-z";
+	const int ARG_DATA_SIZE_IDX = 8;
+	nvme_io_cmd[9] = "-d";
+	nvme_io_cmd[10] = "mybuf";
+	argv = nvme_io_cmd;
+
+	struct nvme_command cmd;
+
+	ssize_t n_bytes_read = read(0, &cmd, sizeof(struct nvme_command));
+	if (n_bytes_read < sizeof(struct nvme_command)) {
+		return 1;
+	}
+	switch (cmd.io_type) {
+		case 0:
+			nvme_io_cmd[ARG_IO_TYPE_IDX] = "read";
+			break;
+		case 1:
+			nvme_io_cmd[ARG_IO_TYPE_IDX] = "write";
+			break;
+		default:
+			return 1;
+	}
+	char start_block_val[50];
+	snprintf(start_block_val, 50, "%u", cmd.start_block);
+	nvme_io_cmd[ARG_START_BLOCK_IDX] = start_block_val;
+	char block_count_val[50];
+	snprintf(block_count_val, 50, "%u", cmd.block_count);
+	nvme_io_cmd[ARG_BLOCK_COUNT_IDX] = block_count_val;
+	char data_size_val[50];
+	snprintf(data_size_val, 50, "%u", cmd.data_size);
+	nvme_io_cmd[ARG_DATA_SIZE_IDX] = data_size_val;
+
+	// optionally log the generated commands
+	if (strcmp(log_path, "") != 0) {
+		FILE *logfilep;
+		logfilep = fopen(log_path, "a");
+		for (int i = 0; i < argc; ++i) {
+			fprintf(logfilep, argv[i]);
+			fprintf(logfilep, " ");
+		}
+		fprintf(logfilep, "\n");
+		fclose(logfilep);
+	}
+
 	int err;
 
 	nvme.extensions->parent = &nvme;
